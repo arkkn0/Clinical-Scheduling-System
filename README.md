@@ -9,9 +9,9 @@ The project stays backend-only so the interesting parts remain visible: transact
 - One booking per slot. The booking transaction locks the slot row before it checks and writes; a unique constraint on `bookings.slot_id` is the final database guard.
 - No overlapping active slots for one doctor. Slot creation locks the doctor row, then checks interval overlap inside the same transaction.
 - Explicit time semantics. API timestamps require an offset and are normalised to UTC.
-- Honest operational signals. `/health` reports process liveness; `/ready` verifies that the database is reachable.
+- Separate health signals. `/health` reports process liveness; `/ready` verifies that the database is reachable.
 
-These are deliberately narrow guarantees. Authentication, recurring appointments, clinician calendars and patient notifications are outside this repository's scope.
+The scope is intentionally narrow. Authentication, recurring appointments, clinician calendars and patient notifications are outside this repository's scope.
 
 ## Concurrency path
 
@@ -103,7 +103,7 @@ Application startup is not a schema versioning strategy. The checked-in migratio
 
 ### AWS status
 
-The container can run on common managed-container or VM platforms and use a managed MySQL database, but this repository does not claim a live AWS deployment or benchmark infrastructure setup time. An earlier README blurred design intent with deployed evidence; this version keeps those distinct.
+The container can run on a managed-container or VM platform with a managed MySQL database. This repository does not include deployed AWS infrastructure or claim infrastructure benchmarks.
 
 ## Structure
 
