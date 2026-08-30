@@ -4,3 +4,10 @@ sqlalchemy==2.0.30
 pymysql==1.1.0
 cryptography==42.0.7
 pydantic==2.7.1
+email-validator==2.1.1
+alembic==1.13.1
+
+# Test and quality tooling
+pytest==8.2.1
+httpx==0.27.0
+ruff==0.4.8

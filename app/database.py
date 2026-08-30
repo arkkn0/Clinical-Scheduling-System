@@ -3,7 +3,6 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "mysql+pymysql://root:root@mysql:3306/clinical_scheduling",
@@ -12,6 +11,7 @@ DATABASE_URL = os.getenv(
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
+    pool_recycle=1800,
     future=True,
 )
 

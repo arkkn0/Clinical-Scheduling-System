@@ -5,7 +5,6 @@ from app.database import get_db
 from app.models import Doctor
 from app.schemas import DoctorCreate, DoctorOut
 
-
 router = APIRouter(prefix="/doctors", tags=["doctors"])
 
 

@@ -1,17 +1,17 @@
-version: "3.9"
-
 services:
   mysql:
     image: mysql:8.0
     container_name: clinical-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-clinical_root_dev}
       MYSQL_DATABASE: clinical_scheduling
+      MYSQL_USER: clinical
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-clinical_dev}
     ports:
       - "3306:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uclinical -p$${MYSQL_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -27,11 +27,11 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      DATABASE_URL: mysql+pymysql://root:root@mysql:3306/clinical_scheduling
+      DATABASE_URL: mysql+pymysql://clinical:${MYSQL_PASSWORD:-clinical_dev}@mysql:3306/clinical_scheduling
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 10s
       timeout: 5s
       retries: 10

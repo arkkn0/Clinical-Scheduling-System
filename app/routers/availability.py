@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Booking, Slot
 from app.schemas import SlotOut
-
 
 router = APIRouter(prefix="/availability", tags=["availability"])
 
@@ -18,7 +17,7 @@ def list_available_slots(doctor_id: int | None = None, db: Session = Depends(get
         select(Slot)
         .outerjoin(Booking, Booking.slot_id == Slot.id)
         .where(Slot.is_active.is_(True))
-        .where(Slot.start_time >= datetime.utcnow())
+        .where(Slot.start_time >= datetime.now(UTC))
         .where(Booking.id.is_(None))
         .order_by(Slot.start_time.asc())
     )

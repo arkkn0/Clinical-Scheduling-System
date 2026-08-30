@@ -1,296 +1,127 @@
-# 🏥 Clinical Scheduling System
+# Clinical Scheduling System
 
-A backend scheduling system built with **FastAPI** and **MySQL**, designed to handle concurrent appointment booking requests with zero double-booking. Containerised with Docker and deployment-ready for AWS EC2 + RDS.
+A small FastAPI and MySQL service built around one deceptively hard requirement: two patients must never own the same appointment slot, even when requests arrive together.
 
----
+The project stays backend-only so the interesting parts remain visible: transaction boundaries, database constraints, interval conflicts, failure responses, migrations, and reproducible tests.
 
-## 📌 Project Overview
+## What it guarantees
 
-This system provides a RESTful API backend for managing clinical appointments — including doctor availability, patient registration, slot management, and conflict-safe bookings.
+- One booking per slot. The booking transaction locks the slot row before it checks and writes; a unique constraint on `bookings.slot_id` is the final database guard.
+- No overlapping active slots for one doctor. Slot creation locks the doctor row, then checks interval overlap inside the same transaction.
+- Explicit time semantics. API timestamps require an offset and are normalised to UTC.
+- Honest operational signals. `/health` reports process liveness; `/ready` verifies that the database is reachable.
 
-The core engineering challenge is **concurrency**: when multiple patients attempt to book the same slot simultaneously, the system must guarantee that only one booking succeeds. This is solved using **MySQL row-level locking (`SELECT ... FOR UPDATE`)** inside a transaction, backed by a **UNIQUE constraint** as a second safety net.
+These are deliberately narrow guarantees. Authentication, recurring appointments, clinician calendars and patient notifications are outside this repository's scope.
 
-> ⚠️ This is a backend-only MVP. No authentication, frontend, or advanced scheduling logic is included by design.
+## Concurrency path
 
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Language | Python 3.11 |
-| Framework | FastAPI |
-| Database | MySQL 8.0 |
-| ORM | SQLAlchemy 2.0 |
-| Containerisation | Docker + Docker Compose |
-| Deployment Target | AWS EC2 + RDS (designed) |
-| API Docs | Swagger UI (auto-generated) |
-
----
-
-## 🏗️ System Architecture
-
-```
-Client (HTTP)
-     │
-     ▼
-┌─────────────────────────┐
-│  FastAPI Application    │
-│  Uvicorn (4 workers)    │
-│  Routers: 6 endpoints   │
-└───────────┬─────────────┘
-            │ SQLAlchemy ORM
-            ▼
-┌─────────────────────────┐
-│  MySQL 8.0              │
-│  Tables: 4              │
-│  - patients             │
-│  - doctors              │
-│  - slots                │
-│  - bookings             │
-└─────────────────────────┘
+```text
+POST /bookings
+      |
+      v
+validate patient
+      |
+      v
+SELECT slot ... FOR UPDATE  <--- competing transactions wait here
+      |
+      v
+check existing booking
+      |
+      v
+INSERT + COMMIT             <--- UNIQUE(slot_id) remains the backstop
 ```
 
-**Docker Compose** runs both the app and MySQL as separate services, linked on an internal network.
+The MySQL integration test sends 50 competing booking requests and asserts the invariant at both boundaries: exactly one `201`, 49 `409` responses, and one booking row.
 
----
+## API
 
-## 📋 Database Schema
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/patients` | Register a patient |
+| `POST` | `/doctors` | Register a doctor |
+| `POST` | `/slots` | Create a non-overlapping appointment slot |
+| `GET` | `/availability` | List future, active, unbooked slots |
+| `POST` | `/bookings` | Book a slot transactionally |
+| `DELETE` | `/bookings/{id}` | Cancel a booking |
+| `GET` | `/health` | Process liveness |
+| `GET` | `/ready` | Database readiness |
 
-```
-patients        doctors
-────────        ───────
-id (PK)         id (PK)
-name            name
-email (unique)  specialty
+OpenAPI documentation is available at `http://localhost:8000/docs` while the service is running.
 
-slots                    bookings
-─────                    ────────
-id (PK)                  id (PK)
-doctor_id (FK)           slot_id (FK, UNIQUE)  ← conflict guard
-start_time               patient_id (FK)
-end_time
-```
+## Run it
 
-The `UNIQUE` constraint on `bookings.slot_id` ensures one slot can only ever have one booking at the database level.
-
----
-
-## 🔌 API Reference
-
-| # | Method | Endpoint | Description |
-|---|--------|----------|-------------|
-| 1 | POST | `/doctors` | Register a new doctor |
-| 2 | POST | `/patients` | Register a new patient |
-| 3 | POST | `/slots` | Create an available time slot |
-| 4 | GET | `/availability` | List all unbooked slots |
-| 5 | POST | `/bookings` | Book a slot (concurrency-safe) |
-| 6 | DELETE | `/bookings/{booking_id}` | Cancel a booking |
-
-Interactive docs available at: `http://localhost:8000/docs`
-
----
-
-## 🔒 Key Feature: Transactional Conflict-Checking
-
-**Problem:** Without protection, two concurrent requests can both read a slot as "available" and both insert a booking — creating a double booking.
-
-**Solution — two-layer defence:**
-
-### Layer 1: Row-Level Lock (`SELECT ... FOR UPDATE`)
-```python
-slot = (
-    db.query(Slot)
-    .filter(Slot.id == payload.slot_id)
-    .with_for_update()   # locks this row in MySQL
-    .first()
-)
-```
-When a booking request arrives, the app locks the target slot row. Any concurrent transaction trying to access the same row is **blocked** until the first one commits or rolls back. This eliminates the read-then-write race condition.
-
-### Layer 2: UNIQUE Constraint
-```sql
-UNIQUE KEY uq_booking_slot (slot_id)
-```
-Even if row locking is bypassed (e.g. misconfigured connection pool), MySQL will reject a duplicate `INSERT` with an `IntegrityError`, which the app converts to a `409 Conflict` response.
-
-**Result:** Exactly one booking succeeds. All others receive `409 Slot already booked`.
-
----
-
-## 🧪 Concurrency Test: 50 Simultaneous Requests
-
-A test script fires **50 concurrent threads**, each attempting to book the same slot at the same time.
+Docker Desktop and Docker Compose are the only local prerequisites.
 
 ```bash
-python tests/test_concurrency.py
-```
-
-**Result:**
-```
-========================================
-CONCURRENCY TEST RESULTS
-========================================
-Total requests   : 50
-Success (201)    : 1
-Failed  (409/4xx): 49
-Errors  (timeout): 0
-Double bookings  : 0
-========================================
-✅ PASSED — conflict prevention works correctly
-```
-
-This directly supports the claim:
-> *"Reducing double-booking to 0% under 50+ concurrent requests"*
-
----
-
-## 🚀 Run Locally
-
-### Prerequisites
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-
-### Steps
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/clinical-scheduling.git
-cd clinical-scheduling
-
-# 2. Start the app + MySQL
+git clone https://github.com/arkkn0/clinical-scheduling-system.git
+cd clinical-scheduling-system
 docker compose up --build
-
-# 3. Wait ~30 seconds, then verify
-# Open browser: http://localhost:8000/health
-# → {"status": "ok"}
 ```
 
-Tables are created automatically on first startup.
+Compose starts MySQL, runs the Alembic migration, and then starts the API. Verify it with:
 
----
-
-## 📡 Example API Usage
-
-### Create a doctor
 ```bash
-curl -X POST http://localhost:8000/doctors \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Dr. Smith", "specialty": "Cardiology"}'
+curl http://localhost:8000/ready
+# {"status":"ready"}
 ```
 
-### Create a patient
+Development credentials in `docker-compose.yml` are local defaults. Override `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` in any shared environment.
+
+## Test it
+
+Fast feedback uses SQLite and skips the database-specific row-lock test:
+
 ```bash
-curl -X POST http://localhost:8000/patients \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Jane Doe", "email": "jane@example.com"}'
+pip install -r requirements.txt
+pytest
+ruff check .
 ```
 
-### Create a slot
+To exercise MySQL locking locally, start the database and point the tests at it:
+
 ```bash
-curl -X POST http://localhost:8000/slots \
-  -H "Content-Type: application/json" \
-  -d '{"doctor_id": 1, "start_time": "2025-09-01T09:00:00", "end_time": "2025-09-01T09:30:00"}'
+docker compose up -d mysql
+$env:TEST_DATABASE_URL="mysql+pymysql://clinical:clinical_dev@127.0.0.1:3306/clinical_scheduling"
+pytest
 ```
 
-### Book a slot
-```bash
-curl -X POST http://localhost:8000/bookings \
-  -H "Content-Type: application/json" \
-  -d '{"slot_id": 1, "patient_id": 1}'
+On macOS or Linux, use `export TEST_DATABASE_URL=...`. GitHub Actions runs the full suite against a MySQL 8 service on every push and pull request.
+
+## Design notes
+
+### Why both a row lock and a unique constraint?
+
+The lock makes the expected conflict path deterministic and lets the API return a useful `409`. The constraint protects the invariant if a later code path forgets to acquire that lock. Correctness should not depend on every future caller remembering the same application convention.
+
+### Why lock the doctor when creating a slot?
+
+An overlap is a range rule rather than a simple equality rule. MySQL has no exclusion constraint for time ranges, so concurrent range checks could both pass. Locking the doctor gives all slot writes for that doctor a shared row on which to serialise.
+
+### Why Alembic instead of creating tables on startup?
+
+Application startup is not a schema versioning strategy. The checked-in migration makes database changes reviewable and repeatable across local, CI and deployment environments.
+
+### AWS status
+
+The container can run on common managed-container or VM platforms and use a managed MySQL database, but this repository does not claim a live AWS deployment or benchmark infrastructure setup time. An earlier README blurred design intent with deployed evidence; this version keeps those distinct.
+
+## Structure
+
+```text
+app/
+  main.py                 application and health endpoints
+  database.py             engine and session lifecycle
+  models.py               relational constraints
+  schemas.py              request validation and UTC normalisation
+  routers/                HTTP boundary
+  services/bookings.py    booking transaction
+alembic/                  versioned schema migration
+tests/
+  test_api.py             API behaviour and interval rules
+  test_concurrency.py     MySQL row-lock integration test
+.github/workflows/ci.yml  lint, migration and MySQL test job
 ```
 
-### Try to double-book (expect 409)
-```bash
-curl -X POST http://localhost:8000/bookings \
-  -H "Content-Type: application/json" \
-  -d '{"slot_id": 1, "patient_id": 1}'
-# → {"detail": "Slot already booked"}
-```
-
-### Cancel a booking
-```bash
-curl -X DELETE http://localhost:8000/bookings/1
-```
-
----
-
-## ☁️ AWS Deployment Design
-
-> Deployment was designed but not provisioned — the resume states "designed deployment", which this section documents.
-
-```
-Internet
-    │
-    ▼
-[EC2 t3.small — Amazon Linux 2023]
-  Docker container
-  uvicorn --workers 4
-    │
-    │ private subnet (port 3306 only)
-    ▼
-[RDS MySQL 8.0 — db.t3.micro]
-```
-
-### Deployment Steps (~5 min)
-
-1. **RDS** — Launch MySQL 8.0 `db.t3.micro` in a private subnet. Note the endpoint URL.
-2. **EC2** — Launch `t3.small`, install Docker:
-   ```bash
-   sudo yum install docker -y && sudo service docker start
-   ```
-3. **Deploy:**
-   ```bash
-   git clone <repo> && cd clinical-scheduling
-   DATABASE_URL=mysql+pymysql://root:<pw>@<rds-endpoint>:3306/clinical \
-   docker compose up --build -d
-   ```
-4. **Security groups:**
-   - EC2 inbound: port `8000` open to `0.0.0.0/0`
-   - RDS inbound: port `3306` open to EC2 security group only
-
-### Why setup time drops from ~20 min to <5 min
-
-Without Docker, you would manually install Python, pip packages, and configure MySQL on every new server — error-prone and slow (~20 min). With this Docker setup, the entire environment is reproduced with **one command** in under 5 minutes.
-
----
-
-## 📁 Project Structure
-
-```
-clinical-scheduling/
-├── app/
-│   ├── main.py              # App entry point, router registration
-│   ├── database.py          # SQLAlchemy engine + session
-│   ├── models.py            # ORM models (4 tables)
-│   ├── schemas.py           # Pydantic request/response schemas
-│   └── routers/
-│       ├── patients.py      # POST /patients
-│       ├── doctors.py       # POST /doctors
-│       ├── slots.py         # POST /slots
-│       ├── availability.py  # GET /availability
-│       └── bookings.py      # POST /bookings, DELETE /bookings/{id}
-├── tests/
-│   └── test_concurrency.py  # 50-thread concurrent booking test
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-└── README.md
-```
-
----
-
-## 🏆 Key Achievements
-
-| Metric | Detail |
-|--------|--------|
-| Double bookings under 50 concurrent requests | **0** |
-| REST API endpoints | **6** |
-| Docker setup time | **< 5 min** (vs ~20 min manual) |
-| Workers | **4** Uvicorn workers |
-| Database conflict layers | **2** (row lock + unique constraint) |
-
----
-
-## 📄 License
+## License
 
 MIT

@@ -1,11 +1,22 @@
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
 
 
 class PatientCreate(BaseModel):
-    name: str
-    email: str
+    name: Name
+    email: EmailStr
 
 
 class PatientOut(BaseModel):
@@ -18,8 +29,8 @@ class PatientOut(BaseModel):
 
 
 class DoctorCreate(BaseModel):
-    name: str
-    specialty: str
+    name: Name
+    specialty: Name
 
 
 class DoctorOut(BaseModel):
@@ -32,9 +43,22 @@ class DoctorOut(BaseModel):
 
 
 class SlotCreate(BaseModel):
-    doctor_id: int
+    doctor_id: int = Field(gt=0)
     start_time: datetime
     end_time: datetime
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timezone offset is required")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "SlotCreate":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be greater than start_time")
+        return self
 
 
 class SlotOut(BaseModel):
@@ -49,8 +73,8 @@ class SlotOut(BaseModel):
 
 
 class BookingCreate(BaseModel):
-    patient_id: int
-    slot_id: int
+    patient_id: int = Field(gt=0)
+    slot_id: int = Field(gt=0)
 
 
 class BookingOut(BaseModel):

@@ -1,77 +1,40 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 
-import requests
+import pytest
+from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
-
-BASE_URL = "http://127.0.0.1:8000"
-THREADS = 50
-
-
-def seed_data():
-    doctor_resp = requests.post(
-        f"{BASE_URL}/doctors",
-        json={"name": "Dr. Concurrency", "specialty": "General Medicine"},
-        timeout=10,
-    )
-    doctor_resp.raise_for_status()
-    doctor_id = doctor_resp.json()["id"]
-
-    patient_resp = requests.post(
-        f"{BASE_URL}/patients",
-        json={"name": "Test Patient", "email": "patient_concurrency@example.com"},
-        timeout=10,
-    )
-    patient_resp.raise_for_status()
-    patient_id = patient_resp.json()["id"]
-
-    slot_resp = requests.post(
-        f"{BASE_URL}/slots",
-        json={
-            "doctor_id": doctor_id,
-            "start_time": "2030-01-01T09:00:00Z",
-            "end_time": "2030-01-01T09:30:00Z",
-        },
-        timeout=10,
-    )
-    slot_resp.raise_for_status()
-    slot_id = slot_resp.json()["id"]
-
-    return patient_id, slot_id
+from app.models import Booking
 
 
-def book_once(patient_id: int, slot_id: int) -> int:
-    resp = requests.post(
-        f"{BASE_URL}/bookings",
-        json={"patient_id": patient_id, "slot_id": slot_id},
-        timeout=10,
-    )
-    return resp.status_code
+@pytest.mark.mysql
+@pytest.mark.anyio
+async def test_fifty_competing_requests_create_exactly_one_booking(
+    client: TestClient,
+    db_engine: Engine,
+    seeded_ids: dict[str, int],
+) -> None:
+    if db_engine.dialect.name != "mysql":
+        pytest.skip("row-locking guarantee requires MySQL")
 
+    payload = {
+        "patient_id": seeded_ids["patient_id"],
+        "slot_id": seeded_ids["slot_id"],
+    }
 
-def main():
-    patient_id, slot_id = seed_data()
-    success = 0
-    failed = 0
+    transport = ASGITransport(app=client.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+        responses = await asyncio.gather(
+            *(async_client.post("/bookings", json=payload) for _ in range(50))
+        )
+    statuses = [response.status_code for response in responses]
 
-    with ThreadPoolExecutor(max_workers=THREADS) as executor:
-        futures = [executor.submit(book_once, patient_id, slot_id) for _ in range(THREADS)]
-        for future in as_completed(futures):
-            status_code = future.result()
-            if status_code == 201:
-                success += 1
-            else:
-                failed += 1
+    with Session(db_engine) as session:
+        booking_count = session.scalar(select(func.count()).select_from(Booking))
 
-    availability_resp = requests.get(f"{BASE_URL}/availability", timeout=10)
-    availability_resp.raise_for_status()
-    available_slots = availability_resp.json()
-    double_booking_count = 0 if len(available_slots) == 0 else len(available_slots) - 1
-
-    print(f"Total requests: {THREADS}")
-    print(f"Success count: {success}")
-    print(f"Failed count: {failed}")
-    print(f"Double booking count: {double_booking_count}")
-
-
-if __name__ == "__main__":
-    main()
+    assert statuses.count(201) == 1
+    assert statuses.count(409) == 49
+    assert booking_count == 1

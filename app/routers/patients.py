@@ -6,7 +6,6 @@ from app.database import get_db
 from app.models import Patient
 from app.schemas import PatientCreate, PatientOut
 
-
 router = APIRouter(prefix="/patients", tags=["patients"])
 
 
