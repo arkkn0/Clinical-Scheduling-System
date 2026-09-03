@@ -38,3 +38,39 @@ async def test_fifty_competing_requests_create_exactly_one_booking(
     assert statuses.count(201) == 1
     assert statuses.count(409) == 49
     assert booking_count == 1
+
+
+@pytest.mark.mysql
+@pytest.mark.anyio
+async def test_fifty_retries_with_one_idempotency_key_replay_one_booking(
+    client: TestClient,
+    db_engine: Engine,
+    seeded_ids: dict[str, int],
+) -> None:
+    if db_engine.dialect.name != "mysql":
+        pytest.skip("row-locking guarantee requires MySQL")
+
+    payload = {
+        "patient_id": seeded_ids["patient_id"],
+        "slot_id": seeded_ids["slot_id"],
+    }
+    transport = ASGITransport(app=client.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+        responses = await asyncio.gather(
+            *(
+                async_client.post(
+                    "/bookings",
+                    json=payload,
+                    headers={"Idempotency-Key": "parallel-retry-001"},
+                )
+                for _ in range(50)
+            )
+        )
+
+    with Session(db_engine) as session:
+        booking_count = session.scalar(select(func.count()).select_from(Booking))
+
+    assert {response.status_code for response in responses} == {201}
+    assert len({response.json()["id"] for response in responses}) == 1
+    assert sum(response.headers["Idempotency-Replayed"] == "true" for response in responses) == 49
+    assert booking_count == 1

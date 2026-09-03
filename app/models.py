@@ -44,4 +44,17 @@ class Booking(Base):
         Integer, ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True
     )
     slot_id = Column(Integer, ForeignKey("slots.id", ondelete="CASCADE"), nullable=False)
+    idempotency_key = Column(String(128), unique=True, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class BookingEvent(Base):
+    __tablename__ = "booking_events"
+
+    id = Column(Integer, primary_key=True)
+    booking_id = Column(Integer, nullable=False, index=True)
+    event_type = Column(String(32), nullable=False)
+    patient_id = Column(Integer, nullable=False)
+    slot_id = Column(Integer, nullable=False)
+    idempotency_key = Column(String(128), nullable=True)
+    occurred_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
